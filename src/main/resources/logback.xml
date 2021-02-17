@@ -1,0 +1,42 @@
+<configuration debug="false">
+    <timestamp key="time" datePattern="yyyyMMdd'T'HHmmss"/>
+
+
+    <appender name="LATEST-FILE" class="ch.qos.logback.core.FileAppender">
+        <file>logs/yaes-latest.log</file>
+        <append>false</append>
+
+        <encoder>
+            <pattern>%d{yyyyMMdd'T'HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="TIMED-FILE" class="ch.qos.logback.core.FileAppender">
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>INFO</level>
+        </filter>
+
+        <file>logs/yaes-${time}.log</file>
+
+        <encoder>
+            <pattern>%d{yyyyMMdd'T'HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>WARN</level>
+        </filter>
+
+        <encoder>
+            <pattern>%d{yyyyMMdd'T'HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+
+    <root level="trace">
+        <appender-ref ref="LATEST-FILE"/>
+        <appender-ref ref="TIMED-FILE"/>
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>
