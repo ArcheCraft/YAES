@@ -6,6 +6,8 @@ import org.joml.*
 import org.joml.Math.clamp
 import org.joml.Math.toRadians
 import org.lwjgl.PointerBuffer
+import org.lwjgl.assimp.Assimp.aiProcess_DropNormals
+import org.lwjgl.assimp.Assimp.aiProcess_FlipUVs
 import org.lwjgl.glfw.GLFW
 import org.lwjgl.glfw.GLFWVulkan.glfwCreateWindowSurface
 import org.lwjgl.glfw.GLFWVulkan.glfwGetRequiredInstanceExtensions
@@ -16,6 +18,7 @@ import org.lwjgl.vulkan.EXTDebugUtils.*
 import org.lwjgl.vulkan.KHRSurface.*
 import org.lwjgl.vulkan.KHRSwapchain.*
 import org.lwjgl.vulkan.VK10.*
+import java.io.File
 import java.lang.ClassLoader.getSystemResource
 import java.net.URI
 import java.nio.IntBuffer
@@ -57,11 +60,17 @@ class VulkanApplication {
     
     private var commandPool: Long = VK_NULL_HANDLE
     
+    private var depthImage: Long = VK_NULL_HANDLE
+    private var depthImageMemory: Long = VK_NULL_HANDLE
+    private var depthImageView: Long = VK_NULL_HANDLE
+    
     private var textureImage: Long = VK_NULL_HANDLE
     private var textureImageMemory: Long = VK_NULL_HANDLE
     private var textureImageView: Long = VK_NULL_HANDLE
     private var textureSampler: Long = VK_NULL_HANDLE
     
+    private lateinit var vertices: Array<Vertex>
+    private lateinit var indices: IntArray
     private var vertexBuffer: Long = VK_NULL_HANDLE
     private var vertexBufferMemory: Long = VK_NULL_HANDLE
     private var indexBuffer: Long = VK_NULL_HANDLE
@@ -102,12 +111,12 @@ class VulkanApplication {
         val bufferFence: LongBuffer get() = MemoryStack.stackGet().longs(fence)
     }
     
-    class Vertex(val pos: Vector2f, val color: Vector3f, val texCoord: Vector2f) {
+    class Vertex(val pos: Vector3f, val color: Vector3f, val texCoord: Vector2f) {
         companion object {
-            const val SIZEOF = (2 + 3 + 2) * Float.SIZE_BYTES
+            const val SIZEOF = (3 + 3 + 2) * Float.SIZE_BYTES
             const val OFFSETOF_POS = 0
-            const val OFFSETOF_COLOR = 2 * Float.SIZE_BYTES
-            const val OFFSETOF_TEXCOORD = (2 + 3) * Float.SIZE_BYTES
+            const val OFFSETOF_COLOR = OFFSETOF_POS + 3 * Float.SIZE_BYTES
+            const val OFFSETOF_TEXCOORD = OFFSETOF_COLOR + 3 * Float.SIZE_BYTES
             
             
             val bindingDescription: VkVertexInputBindingDescription.Buffer
@@ -130,7 +139,7 @@ class VulkanApplication {
                     buffer.get(0).apply {
                         binding(0)
                         location(0)
-                        format(VK_FORMAT_R32G32_SFLOAT)
+                        format(VK_FORMAT_R32G32B32_SFLOAT)
                         offset(OFFSETOF_POS)
                     }
                     
@@ -140,7 +149,7 @@ class VulkanApplication {
                         format(VK_FORMAT_R32G32B32_SFLOAT)
                         offset(OFFSETOF_COLOR)
                     }
-    
+                    
                     buffer.get(2).apply {
                         binding(0)
                         location(2)
@@ -160,19 +169,11 @@ class VulkanApplication {
     }
     
     
-    private val validationLayers: Set<String> = if (DEBUG) setOf("VK_LAYER_KHRONOS_validation") else emptySet()
-    private val deviceExtensions: Set<String> = setOf(VK_KHR_SWAPCHAIN_EXTENSION_NAME)
+    private val VALIDATION_LAYERS: Set<String> = if (DEBUG) setOf("VK_LAYER_KHRONOS_validation") else emptySet()
+    private val DEVICE_EXTENSIONS: Set<String> = setOf(VK_KHR_SWAPCHAIN_EXTENSION_NAME)
     
-    private val VERTICES = arrayOf(
-        Vertex(Vector2f(-0.5f, -0.5f), Vector3f(1.0f, 0.0f, 0.0f), Vector2f(1.0f, 0.0f)),
-        Vertex(Vector2f(0.5f, -0.5f), Vector3f(0.0f, 1.0f, 0.0f), Vector2f(0.0f, 0.0f)),
-        Vertex(Vector2f(0.5f, 0.5f), Vector3f(0.0f, 0.0f, 1.0f), Vector2f(0.0f, 1.0f)),
-        Vertex(Vector2f(-0.5f, 0.5f), Vector3f(1.0f, 1.0f, 1.0f), Vector2f(1.0f, 1.0f))
-    )
-    private val INDICES = intArrayOf(
-        0, 1, 2,
-        2, 3, 0
-    )
+    private val MODEL_PATH = "models/viking_room.obj"
+    private val TEXTURE_PATH = "textures/viking_room.png"
     
     
     fun run() {
@@ -200,11 +201,13 @@ class VulkanApplication {
         createRenderPass()
         createDescriptorSetLayout()
         createGraphicsPipeline()
-        createFramebuffers()
         createCommandPool()
+        createDepthResources()
+        createFramebuffers()
         createTextureImage()
         createTextureImageView()
         createTextureSampler()
+        loadModel()
         createVertexBuffer()
         createIndexBuffer()
         createUniformBuffers()
@@ -262,6 +265,7 @@ class VulkanApplication {
         createImageViews()
         createRenderPass()
         createGraphicsPipeline()
+        createDepthResources()
         createFramebuffers()
         createUniformBuffers()
         createDescriptorPool()
@@ -270,6 +274,9 @@ class VulkanApplication {
     }
     
     private fun cleanupSwapChain() {
+        vkDestroyImageView(device, depthImageView, null)
+        vkDestroyImage(device, depthImage, null)
+        vkFreeMemory(device, depthImageMemory, null)
         swapChainFramebuffers.forEach { vkDestroyFramebuffer(device, it, null) }
         commandBuffers.forEach { vkFreeCommandBuffers(device, commandPool, it) }
         vkDestroyPipeline(device, graphicsPipeline, null)
@@ -298,7 +305,7 @@ class VulkanApplication {
             pApplicationInfo(applicationInfo)
             ppEnabledExtensionNames(getRequiredExtensions())
             if (DEBUG) {
-                ppEnabledLayerNames(asPointerBuffer(validationLayers))
+                ppEnabledLayerNames(asPointerBuffer(VALIDATION_LAYERS))
                 
                 val createInfo = DebugUtilsMessengerCreateInfo()
                 populateDebugMessengerCreateInfo(createInfo)
@@ -391,8 +398,8 @@ class VulkanApplication {
         val createInfo = DeviceCreateInfo().apply {
             pQueueCreateInfos(queueCreateInfos)
             pEnabledFeatures(deviceFeatures)
-            ppEnabledExtensionNames(asPointerBuffer(deviceExtensions))
-            if (DEBUG) ppEnabledLayerNames(asPointerBuffer(validationLayers))
+            ppEnabledExtensionNames(asPointerBuffer(DEVICE_EXTENSIONS))
+            if (DEBUG) ppEnabledLayerNames(asPointerBuffer(VALIDATION_LAYERS))
         }
         
         var pointer = pointers(VK_NULL_HANDLE)
@@ -498,11 +505,11 @@ class VulkanApplication {
     
     private fun MemoryStack.createImageViews() = withStack {
         swapChainImageViews = swapChainImages.map {
-            createImageView(it, swapChainImageFormat)
+            createImageView(it, swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT)
         }
     }
     
-    private fun MemoryStack.createImageView(image: Long, format: Int): Long {
+    private fun MemoryStack.createImageView(image: Long, format: Int, aspectFlags: Int): Long {
         val handle = longs(VK_NULL_HANDLE)
         
         val createInfo = ImageViewCreateInfo().apply {
@@ -516,7 +523,7 @@ class VulkanApplication {
                 it.a(VK_COMPONENT_SWIZZLE_IDENTITY)
             }
             subresourceRange {
-                it.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                it.aspectMask(aspectFlags)
                 it.baseMipLevel(0)
                 it.levelCount(1)
                 it.baseArrayLayer(0)
@@ -530,8 +537,9 @@ class VulkanApplication {
     
     
     private fun MemoryStack.createRenderPass() = withStack {
-        val colorAttachment = VkAttachmentDescription.callocStack(1, this)
-        colorAttachment.get(0).apply {
+        val attachments = VkAttachmentDescription.callocStack(2, this)
+        // color attachment
+        attachments.get(0).apply {
             format(swapChainImageFormat)
             samples(VK_SAMPLE_COUNT_1_BIT)
             loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR)
@@ -541,32 +549,50 @@ class VulkanApplication {
             initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
             finalLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
         }
+        // depth attachment
+        attachments.get(1).apply {
+            format(findDepthFormat())
+            samples(VK_SAMPLE_COUNT_1_BIT)
+            loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR)
+            storeOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
+            stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+            stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
+            initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
+            finalLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        }
         
-        val colorAttachmentRef = VkAttachmentReference.callocStack(1, this)
-        colorAttachmentRef.get(0).apply {
+        val attachmentRefs = VkAttachmentReference.callocStack(2, this)
+        // color attachment ref
+        val colorAttachmentRef = attachmentRefs.get(0).apply {
             attachment(0)
             layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+        }
+        //depth attachment ref
+        val depthAttachmentRef = attachmentRefs.get(1).apply {
+            attachment(1);
+            layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         }
         
         val subpass = VkSubpassDescription.callocStack(1, this)
         subpass.get(0).apply {
             pipelineBindPoint(VK_PIPELINE_BIND_POINT_GRAPHICS)
             colorAttachmentCount(1)
-            pColorAttachments(colorAttachmentRef)
+            pColorAttachments(VkAttachmentReference.callocStack(1, this@withStack).put(0, colorAttachmentRef))
+            pDepthStencilAttachment(depthAttachmentRef)
         }
         
         val dependency = VkSubpassDependency.callocStack(1, this)
         dependency.get(0).apply {
             srcSubpass(VK_SUBPASS_EXTERNAL)
             dstSubpass(0)
-            srcStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)
+            srcStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT or VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT)
             srcAccessMask(0)
-            dstStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)
-            dstAccessMask(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
+            dstStageMask(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT or VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT)
+            dstAccessMask(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT or VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
         }
         
         val renderPassInfo = RenderPassCreateInfo().apply {
-            pAttachments(colorAttachment)
+            pAttachments(attachments)
             pSubpasses(subpass)
             pDependencies(dependency)
         }
@@ -755,10 +781,25 @@ class VulkanApplication {
         }
         
         
+        val depthStencil = PipelineDepthStencilStateCreateInfo().apply {
+            depthTestEnable(true)
+            depthWriteEnable(true)
+            depthCompareOp(VK_COMPARE_OP_LESS)
+            depthBoundsTestEnable(false)
+            stencilTestEnable(false)
+        }
+        
+        
         val colorBlendAttachment = VkPipelineColorBlendAttachmentState.callocStack(1, this)
         colorBlendAttachment.get(0).apply {
             colorWriteMask(VK_COLOR_COMPONENT_R_BIT or VK_COLOR_COMPONENT_G_BIT or VK_COLOR_COMPONENT_B_BIT or VK_COLOR_COMPONENT_A_BIT)
-            blendEnable(false)
+            blendEnable(true)
+            srcColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA)
+            dstColorBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+            colorBlendOp(VK_BLEND_OP_ADD)
+            srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE)
+            dstAlphaBlendFactor(VK_BLEND_FACTOR_ZERO)
+            alphaBlendOp(VK_BLEND_OP_ADD)
         }
         
         val colorBlending = PipelineColorBlendStateCreateInfo().apply {
@@ -785,6 +826,7 @@ class VulkanApplication {
             pViewportState(viewportState)
             pRasterizationState(rasterizer)
             pMultisampleState(multisampling)
+            pDepthStencilState(depthStencil)
             pColorBlendState(colorBlending)
             layout(pipelineLayout)
             renderPass(renderPass)
@@ -817,7 +859,7 @@ class VulkanApplication {
     
     
     private fun MemoryStack.createFramebuffers() = withStack {
-        val attachments = longs(VK_NULL_HANDLE)
+        val attachments = longs(VK_NULL_HANDLE, depthImageView)
         val framebufferHandle = longs(VK_NULL_HANDLE)
         
         val framebufferInfo = FrameBufferCreateInfo().apply {
@@ -851,8 +893,53 @@ class VulkanApplication {
     }
     
     
+    private fun MemoryStack.createDepthResources() = withStack {
+        val depthFormat = findDepthFormat()
+        
+        val depthImageHandle: LongBuffer = mallocLong(1)
+        val depthImageMemoryHandle: LongBuffer = mallocLong(1)
+        
+        createImage(
+            swapChainExtent.width(), swapChainExtent.height(),
+            depthFormat,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            depthImageHandle,
+            depthImageMemoryHandle)
+        
+        depthImage = depthImageHandle.get(0)
+        depthImageMemory = depthImageMemoryHandle.get(0)
+        
+        depthImageView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT)
+        
+        transitionImageLayout(depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    }
+    
+    private fun MemoryStack.findSupportedFormat(formatCandidates: IntBuffer, tiling: Int, features: Int): Int {
+        val props = VkFormatProperties.callocStack(this)
+        
+        for (i in 0 until formatCandidates.capacity()) {
+            val format = formatCandidates.get(i)
+            vkGetPhysicalDeviceFormatProperties(physicalDevice, format, props)
+            
+            if (tiling == VK_IMAGE_TILING_LINEAR && props.linearTilingFeatures() and features == features) {
+                return format
+            } else if (tiling == VK_IMAGE_TILING_OPTIMAL && props.optimalTilingFeatures() and features == features) {
+                return format
+            }
+        }
+        
+        throw VulkanException("Failed to find supported format!")
+    }
+    
+    private fun MemoryStack.findDepthFormat(): Int = findSupportedFormat(ints(VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT), VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+    
+    private fun hasStencilComponent(format: Int): Boolean = format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT
+    
+    
     private fun MemoryStack.createTextureImage() = withStack {
-        val filename = Paths.get(URI(getSystemResource ("textures/texture.png").toExternalForm())).toString()
+        val filename = Paths.get(URI(getSystemResource(TEXTURE_PATH).toExternalForm())).toString()
         
         val width = mallocInt(1)
         val height = mallocInt(1)
@@ -934,7 +1021,15 @@ class VulkanApplication {
             dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
             image(image)
             subresourceRange {
-                it.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+                    it.aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT)
+                    
+                    if (hasStencilComponent(format)) {
+                        it.aspectMask(it.aspectMask() or VK_IMAGE_ASPECT_STENCIL_BIT)
+                    }
+                } else {
+                    it.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                }
                 it.baseMipLevel(0)
                 it.levelCount(1)
                 it.baseArrayLayer(0)
@@ -957,6 +1052,12 @@ class VulkanApplication {
             
             sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+        } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+            barrier.srcAccessMask(0)
+            barrier.dstAccessMask(VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT or VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+            
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+            destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
         } else {
             throw IllegalArgumentException("Unsupported layout transition")
         }
@@ -993,7 +1094,7 @@ class VulkanApplication {
     
     
     private fun MemoryStack.createTextureImageView() = withStack {
-        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB)
+        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT)
     }
     
     
@@ -1024,8 +1125,24 @@ class VulkanApplication {
     }
     
     
+    private fun MemoryStack.loadModel() = withStack {
+        val modelFile = File(getSystemResource(MODEL_PATH).file)
+        
+        val model = loadModel(modelFile, aiProcess_FlipUVs or aiProcess_DropNormals)
+        
+        val color = Vector3f(1.0f, 1.0f, 1.0f)
+        vertices = Array(model.positions.size) {
+            Vertex(model.positions[it], color, model.texCoords[it])
+        }
+        
+        indices = IntArray(model.indices.size) {
+            model.indices[it]
+        }
+    }
+    
+    
     private fun MemoryStack.createVertexBuffer() = withStack {
-        val bufferSize = (Vertex.SIZEOF * VERTICES.size).toLong()
+        val bufferSize = (Vertex.SIZEOF * vertices.size).toLong()
         
         val buffer = mallocLong(1)
         val bufferMemory = mallocLong(1)
@@ -1036,7 +1153,7 @@ class VulkanApplication {
         val data = mallocPointer(1)
         vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, data)
         run {
-            memcpy(data.getByteBuffer(0, bufferSize.toInt()), VERTICES)
+            memcpy(data.getByteBuffer(0, bufferSize.toInt()), vertices)
         }
         vkUnmapMemory(device, stagingBufferMemory)
         
@@ -1052,7 +1169,7 @@ class VulkanApplication {
     }
     
     private fun MemoryStack.createIndexBuffer() = withStack {
-        val bufferSize = (Int.SIZE_BYTES * INDICES.size).toLong()
+        val bufferSize = (Int.SIZE_BYTES * indices.size).toLong()
         
         val buffer = mallocLong(1)
         val bufferMemory = mallocLong(1)
@@ -1063,7 +1180,7 @@ class VulkanApplication {
         val data = mallocPointer(1)
         vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, data)
         run {
-            memcpy(data.getByteBuffer(0, bufferSize.toInt()), INDICES)
+            memcpy(data.getByteBuffer(0, bufferSize.toInt()), indices)
         }
         vkUnmapMemory(device, stagingBufferMemory)
         
@@ -1201,7 +1318,10 @@ class VulkanApplication {
                         }
                         it.extent(swapChainExtent)
                     }
-                    pClearValues(VkClearValue.callocStack(1, this@withStack).color { it.float32(floats(0.0f, 0.0f, 0.0f, 1.0f)) })
+                    val clearValues = VkClearValue.callocStack(2, this@withStack)
+                    clearValues.get(0).apply { color { it.float32(floats(0.0f, 0.0f, 0.0f, 1.0f)) } }
+                    clearValues.get(1).apply { depthStencil { it.set(1.0f, 0) } }
+                    pClearValues(clearValues)
                 }
                 
                 vkCmdBeginRenderPass(command, renderPassInfo, VK_SUBPASS_CONTENTS_INLINE)
@@ -1214,7 +1334,7 @@ class VulkanApplication {
                     
                     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, longs(descriptorSets[i]), null)
                     
-                    vkCmdDrawIndexed(command, INDICES.size, 1, 0, 0, 0)
+                    vkCmdDrawIndexed(command, indices.size, 1, 0, 0, 0)
                 }
                 vkCmdEndRenderPass(command)
             }
@@ -1334,7 +1454,7 @@ class VulkanApplication {
         return glfwExtensions
     }
     
-    private fun MemoryStack.checkValidationLayers() = getLayers().map { it.layerNameString() }.containsAll(validationLayers)
+    private fun MemoryStack.checkValidationLayers() = getLayers().map { it.layerNameString() }.containsAll(VALIDATION_LAYERS)
     
-    private fun MemoryStack.checkDeviceExtensions(device: VkPhysicalDevice) = getExtensions(device).map { it.extensionNameString() }.containsAll(deviceExtensions)
+    private fun MemoryStack.checkDeviceExtensions(device: VkPhysicalDevice) = getExtensions(device).map { it.extensionNameString() }.containsAll(DEVICE_EXTENSIONS)
 }

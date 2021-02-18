@@ -37,6 +37,8 @@ fun MemoryStack.PipelineRasterizationStateCreateInfo() = VkPipelineRasterization
 
 fun MemoryStack.PipelineMultisampleStateCreateInfo() = VkPipelineMultisampleStateCreateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
 
+fun MemoryStack.PipelineDepthStencilStateCreateInfo() = VkPipelineDepthStencilStateCreateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)
+
 fun MemoryStack.PipelineColorBlendStateCreateInfo() = VkPipelineColorBlendStateCreateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
 
 fun MemoryStack.PipelineLayoutCreateInfo() = VkPipelineLayoutCreateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO)
