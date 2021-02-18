@@ -45,6 +45,8 @@ fun memcpy(buffer: ByteBuffer, vertices: Array<Vertex>) {
         buffer.putFloat(vertex.color.x())
         buffer.putFloat(vertex.color.y())
         buffer.putFloat(vertex.color.z())
+        buffer.putFloat(vertex.texCoord.x())
+        buffer.putFloat(vertex.texCoord.y())
     }
     buffer.rewind()
 }
@@ -65,12 +67,21 @@ fun memcpy(buffer: ByteBuffer, ubo: UniformBufferObject) {
     buffer.rewind()
 }
 
+fun memcpy(dst: ByteBuffer, src: ByteBuffer, size: Long) {
+    src.limit(size.toInt())
+    dst.put(src)
+    src.limit(src.capacity()).rewind()
+}
+
 
 private fun logDebugMessage(messageSeverity: Int, message: () -> String) = when (messageSeverity) {
     VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT -> Logger.trace(message)
     VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT -> Logger.debug(message)
     VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT -> Logger.warn(message)
-    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT -> Logger.error(message)
+    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT -> {
+        Logger.error { Thread.currentThread().stackTrace.map { it.toString() }.toString() }
+        Logger.error(message)
+    }
     else -> Logger.info(message)
 }
 

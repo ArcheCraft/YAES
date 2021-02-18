@@ -1,3 +1,5 @@
+@file:Suppress("HasPlatformType", "FunctionName")
+
 package com.archecraft.yaes.vulkan
 
 import org.lwjgl.system.MemoryStack
@@ -54,6 +56,10 @@ fun MemoryStack.BufferCreateInfo() = VkBufferCreateInfo.callocStack(this).sType(
 fun MemoryStack.DescriptorSetLayoutCreateInfo() = VkDescriptorSetLayoutCreateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)
 
 fun MemoryStack.DescriptorPoolCreateInfo() = VkDescriptorPoolCreateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO)
+
+fun MemoryStack.ImageCreateInfo() = VkImageCreateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO)
+
+fun MemoryStack.SamplerCreateInfo() = VkSamplerCreateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO)
 
 
 fun MemoryStack.CommandBufferAllocateInfo() = VkCommandBufferAllocateInfo.callocStack(this).sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
