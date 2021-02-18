@@ -24,6 +24,8 @@ import java.net.URI
 import java.nio.IntBuffer
 import java.nio.LongBuffer
 import java.nio.file.Paths
+import kotlin.math.floor
+import kotlin.math.log2
 
 
 val Logger = KotlinLogging.logger {}
@@ -64,6 +66,7 @@ class VulkanApplication {
     private var depthImageMemory: Long = VK_NULL_HANDLE
     private var depthImageView: Long = VK_NULL_HANDLE
     
+    private var mipLevels: Int = 0
     private var textureImage: Long = VK_NULL_HANDLE
     private var textureImageMemory: Long = VK_NULL_HANDLE
     private var textureImageView: Long = VK_NULL_HANDLE
@@ -505,11 +508,11 @@ class VulkanApplication {
     
     private fun MemoryStack.createImageViews() = withStack {
         swapChainImageViews = swapChainImages.map {
-            createImageView(it, swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT)
+            createImageView(it, swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1)
         }
     }
     
-    private fun MemoryStack.createImageView(image: Long, format: Int, aspectFlags: Int): Long {
+    private fun MemoryStack.createImageView(image: Long, format: Int, aspectFlags: Int, mipLevels: Int): Long {
         val handle = longs(VK_NULL_HANDLE)
         
         val createInfo = ImageViewCreateInfo().apply {
@@ -525,7 +528,7 @@ class VulkanApplication {
             subresourceRange {
                 it.aspectMask(aspectFlags)
                 it.baseMipLevel(0)
-                it.levelCount(1)
+                it.levelCount(mipLevels)
                 it.baseArrayLayer(0)
                 it.layerCount(1)
             }
@@ -569,8 +572,8 @@ class VulkanApplication {
         }
         //depth attachment ref
         val depthAttachmentRef = attachmentRefs.get(1).apply {
-            attachment(1);
-            layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            attachment(1)
+            layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
         }
         
         val subpass = VkSubpassDescription.callocStack(1, this)
@@ -899,21 +902,14 @@ class VulkanApplication {
         val depthImageHandle: LongBuffer = mallocLong(1)
         val depthImageMemoryHandle: LongBuffer = mallocLong(1)
         
-        createImage(
-            swapChainExtent.width(), swapChainExtent.height(),
-            depthFormat,
-            VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            depthImageHandle,
-            depthImageMemoryHandle)
+        createImage(swapChainExtent.width(), swapChainExtent.height(), 1, depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImageHandle, depthImageMemoryHandle)
         
         depthImage = depthImageHandle.get(0)
         depthImageMemory = depthImageMemoryHandle.get(0)
         
-        depthImageView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT)
+        depthImageView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1)
         
-        transitionImageLayout(depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        transitionImageLayout(depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1)
     }
     
     private fun MemoryStack.findSupportedFormat(formatCandidates: IntBuffer, tiling: Int, features: Int): Int {
@@ -948,6 +944,8 @@ class VulkanApplication {
         val pixels = stbi_load(filename, width, height, channels, STBI_rgb_alpha) ?: throw VulkanException("Failed to load texture image $filename")
         val imageSize = width.get(0) * height.get(0) * 4
         
+        mipLevels = floor(log2(width.get(0).coerceAtLeast(height.get(0)).toDouble())).toInt() + 1
+        
         val stagingBuffer = mallocLong(1)
         val stagingBufferMemory = mallocLong(1)
         createBuffer(imageSize.toLong(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory)
@@ -963,22 +961,114 @@ class VulkanApplication {
         
         val textureImageHandle: LongBuffer = mallocLong(1)
         val textureImageMemoryHandle: LongBuffer = mallocLong(1)
-        createImage(width.get(0), height.get(0), VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImageHandle, textureImageMemoryHandle)
+        createImage(width.get(0), height.get(0), mipLevels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT or VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImageHandle, textureImageMemoryHandle)
         
         textureImage = textureImageHandle.get(0)
         textureImageMemory = textureImageMemoryHandle.get(0)
         
-        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels)
         
         copyBufferToImage(stagingBuffer.get(0), textureImage, width.get(0), height.get(0))
         
-        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        generateMipmaps(textureImage, VK_FORMAT_R8G8B8A8_SRGB, width.get(0), height.get(0), mipLevels)
         
         vkDestroyBuffer(device, stagingBuffer.get(0), null)
         vkFreeMemory(device, stagingBufferMemory.get(0), null)
     }
     
-    private fun MemoryStack.createImage(width: Int, height: Int, format: Int, tiling: Int, usage: Int, memProperties: Int, textureImage: LongBuffer, textureImageMemory: LongBuffer) {
+    private fun MemoryStack.generateMipmaps(image: Long, imageFormat: Int, width: Int, height: Int, mipLevels: Int) {
+        val formatProperties: VkFormatProperties = VkFormatProperties.mallocStack(this)
+        vkGetPhysicalDeviceFormatProperties(physicalDevice, imageFormat, formatProperties)
+        
+        if (formatProperties.optimalTilingFeatures() and VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT == 0) {
+            throw VulkanException("Texture image format does not support linear blitting!")
+        }
+        
+        val commandBuffer = beginSingleTimeCommands()
+        
+        val barrier = VkImageMemoryBarrier.callocStack(1, this)
+        barrier.get(0).apply {
+            sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+            image(image)
+            srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+            dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+            dstAccessMask(VK_QUEUE_FAMILY_IGNORED)
+            subresourceRange {
+                it.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                it.baseArrayLayer(0)
+                it.layerCount(1)
+                it.levelCount(1)
+            }
+        }
+        
+        var mipWidth = width
+        var mipHeight = height
+        
+        for (i in 1 until mipLevels) {
+            barrier.get(0).apply {
+                subresourceRange().baseMipLevel(i - 1)
+                oldLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                newLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+                srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT)
+                dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT)
+            }
+            
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, barrier)
+            
+            val blit = VkImageBlit.callocStack(1, this)
+            blit.get(0).apply {
+                srcOffsets {
+                    it.get(0).set(0, 0, 0)
+                    it.get(1).set(mipWidth, mipHeight, 1)
+                }
+                srcSubresource {
+                    it.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                    it.mipLevel(i - 1)
+                    it.baseArrayLayer(0)
+                    it.layerCount(1)
+                }
+                dstOffsets {
+                    it.get(0).set(0, 0, 0)
+                    it.get(1).set(if (mipWidth > 1) mipWidth / 2 else 1, if (mipHeight > 1) mipHeight / 2 else 1, 1)
+                }
+                dstSubresource {
+                    it.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                    it.mipLevel(i)
+                    it.baseArrayLayer(0)
+                    it.layerCount(1)
+                }
+            }
+            
+            vkCmdBlitImage(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, blit, VK_FILTER_LINEAR)
+            
+            barrier.get(0).apply {
+                oldLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+                newLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                srcAccessMask(VK_ACCESS_TRANSFER_READ_BIT)
+                dstAccessMask(VK_ACCESS_SHADER_READ_BIT)
+            }
+            
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, null, null, barrier)
+            
+            if (mipWidth > 1) mipWidth /= 2
+            
+            if (mipHeight > 1) mipHeight /= 2
+        }
+        
+        barrier.get(0).apply {
+            subresourceRange().baseMipLevel(mipLevels - 1)
+            oldLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+            newLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT)
+            dstAccessMask(VK_ACCESS_SHADER_READ_BIT)
+        }
+        
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, null, null, barrier)
+        
+        endSingleTimeCommands(commandBuffer)
+    }
+    
+    private fun MemoryStack.createImage(width: Int, height: Int, mipLevels: Int, format: Int, tiling: Int, usage: Int, memProperties: Int, textureImage: LongBuffer, textureImageMemory: LongBuffer) {
         val imageInfo = ImageCreateInfo().apply {
             imageType(VK_IMAGE_TYPE_2D)
             extent {
@@ -986,7 +1076,7 @@ class VulkanApplication {
                 it.height(height)
                 it.depth(1)
             }
-            mipLevels(1)
+            mipLevels(mipLevels)
             arrayLayers(1)
             format(format)
             tiling(tiling)
@@ -1011,7 +1101,7 @@ class VulkanApplication {
         vkBindImageMemory(device, textureImage.get(0), textureImageMemory.get(0), 0)
     }
     
-    private fun MemoryStack.transitionImageLayout(image: Long, format: Int, oldLayout: Int, newLayout: Int) {
+    private fun MemoryStack.transitionImageLayout(image: Long, format: Int, oldLayout: Int, newLayout: Int, mipLevels: Int) {
         val barrier = VkImageMemoryBarrier.callocStack(1, this)
         barrier.get(0).apply {
             sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
@@ -1031,7 +1121,7 @@ class VulkanApplication {
                     it.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
                 }
                 it.baseMipLevel(0)
-                it.levelCount(1)
+                it.levelCount(mipLevels)
                 it.baseArrayLayer(0)
                 it.layerCount(1)
             }
@@ -1094,7 +1184,7 @@ class VulkanApplication {
     
     
     private fun MemoryStack.createTextureImageView() = withStack {
-        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT)
+        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels)
     }
     
     
@@ -1115,6 +1205,7 @@ class VulkanApplication {
             compareEnable(false)
             compareOp(VK_COMPARE_OP_ALWAYS)
             mipmapMode(VK_SAMPLER_MIPMAP_MODE_LINEAR)
+            maxLod(mipLevels.toFloat())
         }
         
         val textureSamplerHandle: LongBuffer = mallocLong(1)
