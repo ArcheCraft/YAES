@@ -79,10 +79,7 @@ private fun logDebugMessage(messageSeverity: Int, message: () -> String) = when 
     VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT -> Logger.trace(message)
     VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT -> Logger.debug(message)
     VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT -> Logger.warn(message)
-    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT -> {
-        Logger.error { Thread.currentThread().stackTrace.map { it.toString() }.toString() }
-        Logger.error(message)
-    }
+    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT -> Logger.error(message)
     else -> Logger.info(message)
 }
 

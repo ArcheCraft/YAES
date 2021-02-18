@@ -41,6 +41,7 @@ class VulkanApplication {
     private var surface: Long = VK_NULL_HANDLE
     
     private lateinit var physicalDevice: VkPhysicalDevice
+    private var msaaSamples: Int = VK_SAMPLE_COUNT_1_BIT
     private lateinit var device: VkDevice
     
     private lateinit var graphicsQueue: VkQueue
@@ -61,6 +62,10 @@ class VulkanApplication {
     private var graphicsPipeline: Long = VK_NULL_HANDLE
     
     private var commandPool: Long = VK_NULL_HANDLE
+    
+    private var colorImage: Long = VK_NULL_HANDLE
+    private var colorImageMemory: Long = VK_NULL_HANDLE
+    private var colorImageView: Long = VK_NULL_HANDLE
     
     private var depthImage: Long = VK_NULL_HANDLE
     private var depthImageMemory: Long = VK_NULL_HANDLE
@@ -205,6 +210,7 @@ class VulkanApplication {
         createDescriptorSetLayout()
         createGraphicsPipeline()
         createCommandPool()
+        createColorResources()
         createDepthResources()
         createFramebuffers()
         createTextureImage()
@@ -268,6 +274,7 @@ class VulkanApplication {
         createImageViews()
         createRenderPass()
         createGraphicsPipeline()
+        createColorResources()
         createDepthResources()
         createFramebuffers()
         createUniformBuffers()
@@ -277,6 +284,9 @@ class VulkanApplication {
     }
     
     private fun cleanupSwapChain() {
+        vkDestroyImageView(device, colorImageView, null)
+        vkDestroyImage(device, colorImage, null)
+        vkFreeMemory(device, colorImageMemory, null)
         vkDestroyImageView(device, depthImageView, null)
         vkDestroyImage(device, depthImage, null)
         vkFreeMemory(device, depthImageMemory, null)
@@ -346,6 +356,7 @@ class VulkanApplication {
     // TODO: Use ratings instead of first one
     private fun MemoryStack.pickPhysicalDevice() = withStack {
         physicalDevice = getPhysicalDevices(instance).firstOrNull { isDeviceSuitable(it) } ?: throw VulkanException("Failed to find GPUs with Vulkan support!")
+        msaaSamples = getMaxUsableSampleCount()
     }
     
     private fun MemoryStack.isDeviceSuitable(device: VkPhysicalDevice): Boolean {
@@ -377,6 +388,23 @@ class VulkanApplication {
         }
         
         return indices
+    }
+    
+    private fun MemoryStack.getMaxUsableSampleCount(): Int {
+        val physicalDeviceProperties: VkPhysicalDeviceProperties = VkPhysicalDeviceProperties.mallocStack(this)
+        vkGetPhysicalDeviceProperties(physicalDevice, physicalDeviceProperties)
+        
+        val sampleCountFlags = (physicalDeviceProperties.limits().framebufferColorSampleCounts() and physicalDeviceProperties.limits().framebufferDepthSampleCounts())
+        
+        return when {
+            sampleCountFlags and VK_SAMPLE_COUNT_64_BIT != 0 -> VK_SAMPLE_COUNT_64_BIT
+            sampleCountFlags and VK_SAMPLE_COUNT_32_BIT != 0 -> VK_SAMPLE_COUNT_32_BIT
+            sampleCountFlags and VK_SAMPLE_COUNT_16_BIT != 0 -> VK_SAMPLE_COUNT_16_BIT
+            sampleCountFlags and VK_SAMPLE_COUNT_8_BIT != 0  -> VK_SAMPLE_COUNT_8_BIT
+            sampleCountFlags and VK_SAMPLE_COUNT_4_BIT != 0  -> VK_SAMPLE_COUNT_4_BIT
+            sampleCountFlags and VK_SAMPLE_COUNT_2_BIT != 0  -> VK_SAMPLE_COUNT_2_BIT
+            else                                             -> VK_SAMPLE_COUNT_1_BIT
+        }
     }
     
     
@@ -540,22 +568,22 @@ class VulkanApplication {
     
     
     private fun MemoryStack.createRenderPass() = withStack {
-        val attachments = VkAttachmentDescription.callocStack(2, this)
-        // color attachment
+        val attachments = VkAttachmentDescription.callocStack(3, this)
+        // MSAA attachment
         attachments.get(0).apply {
             format(swapChainImageFormat)
-            samples(VK_SAMPLE_COUNT_1_BIT)
+            samples(msaaSamples)
             loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR)
             storeOp(VK_ATTACHMENT_STORE_OP_STORE)
             stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
             stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
             initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
-            finalLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+            finalLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
         }
         // depth attachment
         attachments.get(1).apply {
             format(findDepthFormat())
-            samples(VK_SAMPLE_COUNT_1_BIT)
+            samples(msaaSamples)
             loadOp(VK_ATTACHMENT_LOAD_OP_CLEAR)
             storeOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
             stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
@@ -563,17 +591,33 @@ class VulkanApplication {
             initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
             finalLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
         }
+        // present attachment
+        attachments.get(2).apply {
+            format(swapChainImageFormat)
+            samples(VK_SAMPLE_COUNT_1_BIT)
+            loadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+            storeOp(VK_ATTACHMENT_STORE_OP_STORE)
+            stencilLoadOp(VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+            stencilStoreOp(VK_ATTACHMENT_STORE_OP_DONT_CARE)
+            initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
+            finalLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+        }
         
-        val attachmentRefs = VkAttachmentReference.callocStack(2, this)
-        // color attachment ref
+        val attachmentRefs = VkAttachmentReference.callocStack(3, this)
+        // MSAA attachment ref
         val colorAttachmentRef = attachmentRefs.get(0).apply {
             attachment(0)
             layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
         }
-        //depth attachment ref
+        // depth attachment ref
         val depthAttachmentRef = attachmentRefs.get(1).apply {
             attachment(1)
             layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        }
+        // present attachment ref
+        val colorAttachmentResolveRef = attachmentRefs.get(2).apply {
+            attachment(2)
+            layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
         }
         
         val subpass = VkSubpassDescription.callocStack(1, this)
@@ -582,6 +626,7 @@ class VulkanApplication {
             colorAttachmentCount(1)
             pColorAttachments(VkAttachmentReference.callocStack(1, this@withStack).put(0, colorAttachmentRef))
             pDepthStencilAttachment(depthAttachmentRef)
+            pResolveAttachments(VkAttachmentReference.callocStack(1, this@withStack).put(0, colorAttachmentResolveRef))
         }
         
         val dependency = VkSubpassDependency.callocStack(1, this)
@@ -780,7 +825,7 @@ class VulkanApplication {
         
         val multisampling = PipelineMultisampleStateCreateInfo().apply {
             sampleShadingEnable(false)
-            rasterizationSamples(VK_SAMPLE_COUNT_1_BIT)
+            rasterizationSamples(msaaSamples)
         }
         
         
@@ -862,7 +907,7 @@ class VulkanApplication {
     
     
     private fun MemoryStack.createFramebuffers() = withStack {
-        val attachments = longs(VK_NULL_HANDLE, depthImageView)
+        val attachments = longs(colorImageView, depthImageView, VK_NULL_HANDLE)
         val framebufferHandle = longs(VK_NULL_HANDLE)
         
         val framebufferInfo = FrameBufferCreateInfo().apply {
@@ -873,7 +918,7 @@ class VulkanApplication {
         }
         
         swapChainFramebuffers = swapChainImageViews.map {
-            attachments.put(0, it)
+            attachments.put(2, it)
             framebufferInfo.pAttachments(attachments)
             
             vkCreateFramebuffer(device, framebufferInfo, null, framebufferHandle).checkResult("Failed to create framebuffer!")
@@ -896,13 +941,26 @@ class VulkanApplication {
     }
     
     
+    private fun MemoryStack.createColorResources() = withStack {
+        val colorImageHandle: LongBuffer = mallocLong(1)
+        val colorImageMemoryHandle: LongBuffer = mallocLong(1)
+        
+        createImage(swapChainExtent.width(), swapChainExtent.height(), 1, msaaSamples, swapChainImageFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT or VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, colorImageHandle, colorImageMemoryHandle)
+        
+        colorImage = colorImageHandle[0]
+        colorImageMemory = colorImageMemoryHandle[0]
+        
+        colorImageView = createImageView(colorImage, swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1)
+    }
+    
+    
     private fun MemoryStack.createDepthResources() = withStack {
         val depthFormat = findDepthFormat()
         
         val depthImageHandle: LongBuffer = mallocLong(1)
         val depthImageMemoryHandle: LongBuffer = mallocLong(1)
         
-        createImage(swapChainExtent.width(), swapChainExtent.height(), 1, depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImageHandle, depthImageMemoryHandle)
+        createImage(swapChainExtent.width(), swapChainExtent.height(), 1, msaaSamples, depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImageHandle, depthImageMemoryHandle)
         
         depthImage = depthImageHandle.get(0)
         depthImageMemory = depthImageMemoryHandle.get(0)
@@ -961,7 +1019,7 @@ class VulkanApplication {
         
         val textureImageHandle: LongBuffer = mallocLong(1)
         val textureImageMemoryHandle: LongBuffer = mallocLong(1)
-        createImage(width.get(0), height.get(0), mipLevels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT or VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImageHandle, textureImageMemoryHandle)
+        createImage(width.get(0), height.get(0), mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT or VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImageHandle, textureImageMemoryHandle)
         
         textureImage = textureImageHandle.get(0)
         textureImageMemory = textureImageMemoryHandle.get(0)
@@ -1068,7 +1126,7 @@ class VulkanApplication {
         endSingleTimeCommands(commandBuffer)
     }
     
-    private fun MemoryStack.createImage(width: Int, height: Int, mipLevels: Int, format: Int, tiling: Int, usage: Int, memProperties: Int, textureImage: LongBuffer, textureImageMemory: LongBuffer) {
+    private fun MemoryStack.createImage(width: Int, height: Int, mipLevels: Int, numSamples: Int, format: Int, tiling: Int, usage: Int, memProperties: Int, textureImage: LongBuffer, textureImageMemory: LongBuffer) {
         val imageInfo = ImageCreateInfo().apply {
             imageType(VK_IMAGE_TYPE_2D)
             extent {
@@ -1082,7 +1140,7 @@ class VulkanApplication {
             tiling(tiling)
             initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
             usage(usage)
-            samples(VK_SAMPLE_COUNT_1_BIT)
+            samples(numSamples)
             sharingMode(VK_SHARING_MODE_EXCLUSIVE)
         }
         
