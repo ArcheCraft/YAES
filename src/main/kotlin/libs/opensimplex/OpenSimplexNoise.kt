@@ -1,4 +1,4 @@
-package libs.opensimplex
+package com.archecraft.yaes.libs.opensimplex
 
 import opensimplex.OpenSimplex2F
 import opensimplex.OpenSimplex2S

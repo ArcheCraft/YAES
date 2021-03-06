@@ -1,6 +1,6 @@
 package com.archecraft.yaes.vulkan
 
-import com.archecraft.games.yaes.lib.util.orThrow
+import com.archecraft.lib.util.orThrow
 import org.lwjgl.system.MemoryUtil.NULL
 import org.lwjgl.system.NativeResource
 import org.lwjgl.util.shaderc.Shaderc.*

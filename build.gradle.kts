@@ -1,13 +1,19 @@
 import org.jetbrains.kotlin.daemon.common.OSKind
+import java.util.Properties
 
 plugins {
     java
     application
+    idea
+    id("org.jetbrains.gradle.plugin.idea-ext") version "0.10"
     kotlin("jvm")
 }
 
 group = "com.archecraft.yaes"
 version = "1.0-SNAPSHOT"
+
+val localProperties = Properties()
+localProperties.load(rootProject.file("local.properties").inputStream())
 
 val lwjglNatives = when (OSKind.current) {
     OSKind.Unix -> "natives-linux"
@@ -20,17 +26,23 @@ val lwjglNatives = when (OSKind.current) {
 repositories {
     google()
     mavenCentral()
+    maven(url = "https://maven.pkg.github.com/ArcheCraft/ACLib") {
+        credentials {
+            username = localProperties.getProperty("gpr.user") ?: System.getenv("USERNAME")
+            password = localProperties.getProperty("gpr.key") ?: System.getenv("TOKEN")
+        }
+    }
     maven(url = "https://dl.bintray.com/hotkeytlt/maven")
     maven(url = "https://dl.bintray.com/kotlin/dokka")
     maven(url = "https://jitpack.io")
     maven(url = "https://kotlin.bintray.com/kotlinx")
     maven(url = "http://artifactory.nimblygames.com/artifactory/ng-public-release")
-    mavenLocal()
     jcenter()
 }
 
 dependencies {
     val ktorVersion: String by project
+    val acLibVersion: String by project
     val nightConfigVersion: String by project
     val asmVersion: String by project
     val zip4jVersion: String by project
@@ -51,7 +63,7 @@ dependencies {
     
     
     
-    implementation("com.archecraft.lib:lib:1.0-SNAPSHOT")
+    implementation("com.archecraft.lib:lib:$acLibVersion")
     
     implementation(kotlin("stdlib"))
     implementation(kotlin("reflect"))
@@ -101,4 +113,22 @@ tasks.run.configure {
     main = "com.archecraft.yaes.MainKt"
     jvmArgs("-Dorg.lwjgl.util.Debug=true")
     isIgnoreExitValue = true
+}
+
+
+fun org.gradle.plugins.ide.idea.model.IdeaModule.settings(configure: org.jetbrains.gradle.ext.ModuleSettings.() -> Unit) =
+    (this as ExtensionAware).configure(configure)
+
+val org.jetbrains.gradle.ext.ModuleSettings.packagePrefix: org.jetbrains.gradle.ext.PackagePrefixContainer
+    get() = (this as ExtensionAware).the()
+
+idea {
+    module {
+        isDownloadJavadoc = true
+        isDownloadSources = true
+        
+        settings {
+            packagePrefix["src/main/kotlin"] = "com.archecraft.yaes"
+        }
+    }
 }
